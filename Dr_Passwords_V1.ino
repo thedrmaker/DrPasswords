@@ -3,6 +3,8 @@ const char* WIFI_SSID = "***************";
 const char* WIFI_PASSWORD = "**********";
 const char* GMAIL_TOTP_BASE32 = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
 
+#include <vector>
+#include <CSV_Parser.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -73,7 +75,7 @@ MenuItem mainMenuItems[] = {
   {"Settings",  ITEM_SUBMENU, nullptr, nullptr}
 };
 
-const int MAX_PASSWORD_ITEMS = 12;
+const int MAX_PASSWORD_ITEMS = 50;
 
 MenuItem passwordMenuItems[MAX_PASSWORD_ITEMS];
 int passwordMenuCount = 4;
@@ -643,7 +645,17 @@ void handlePortalRoot() {
     }
     html += "</table>";
   }
-  html += "</div></div></body></html>";
+  html += "</div>";
+
+  // CSV upload card
+  html += "<div class='card'><h2>Import from CSV</h2>";
+  html += "<p style='color:#bdbdbd;font-size:14px;margin:0 0 16px 0;'>Supports Safari and Chrome exported password CSV files.</p>";
+  html += "<form method='POST' action='/upload_csv' enctype='multipart/form-data'>";
+  html += "<input type='file' name='csv_file' accept='.csv' style='width:100%;padding:12px 0;color:#fff;font-size:15px;'>";
+  html += "<div class='actions'><button class='btn btn-primary' type='submit'>Upload &amp; Import</button></div>";
+  html += "</form></div>";
+
+  html += "</div></body></html>";
 
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   server.sendHeader("Pragma", "no-cache");
@@ -738,6 +750,7 @@ void startSettingsPortal() {
   server.on("/ncsi.txt", HTTP_GET, handlePortalRoot);
   server.on("/save", HTTP_POST, handlePortalSave);
   server.on("/delete_now", HTTP_GET, handlePortalDeleteNow);
+  server.on("/upload_csv", HTTP_POST, handlePortalUploadCSV, handlePortalUploadCSVBody);
   server.onNotFound(handlePortalRoot);
   server.begin();
 
@@ -780,6 +793,118 @@ void handlePortalDeleteNow() {
   refreshPasswordMenuItems();
   savePasswordsToPreferences();
   handlePortalRoot();
+}
+
+String csvUploadBody = "";
+bool csvUploadDone = false;
+
+void handlePortalUploadCSV() {
+  String csv = csvUploadBody;
+  csvUploadBody = "";
+  csvUploadDone = false;
+
+  int added = 0;
+
+  struct SkippedEntry { String title; String url; String reason; };
+  std::vector<SkippedEntry> skippedEntries;
+
+  char* csvBuf = new char[csv.length() + 1];
+  csv.toCharArray(csvBuf, csv.length() + 1);
+
+  // Count columns from header line to build correct format string
+  int colCount = 1;
+  int headerEnd = csv.indexOf('\n');
+  String headerLine = (headerEnd > 0) ? csv.substring(0, headerEnd) : csv;
+  for (int i = 0; i < (int)headerLine.length(); i++) {
+    if (headerLine[i] == ',') colCount++;
+  }
+
+  String fmt = "";
+  for (int i = 0; i < colCount; i++) fmt += 's';
+
+  CSV_Parser cp(csvBuf, fmt.c_str());
+  delete[] csvBuf;
+
+  char** names     = (char**)cp["Title"]    ?:(char**)cp["title"]    ?: (char**)cp["Name"] ?: (char**)cp["name"];
+  char** urls      = (char**)cp["URL"]      ?: (char**)cp["Url"]      ?: (char**)cp["url"];
+  char** usernames = (char**)cp["Username"] ?: (char**)cp["username"];
+  char** passwords = (char**)cp["Password"] ?: (char**)cp["password"];
+
+  if (!names || !passwords) {
+    server.send(200, "text/html", "<!doctype html><html><body style='background:#0b0b0b;color:#fff;font-family:Arial;padding:24px;'>"
+      "<h2>Invalid CSV format</h2><p>Could not find required columns (title/name, password).</p>"
+      "<p><a href='/' style='color:#4d8ef7;'>Back</a></p></body></html>");
+    return;
+  }
+
+  int rowCount = cp.getRowsCount();
+
+  for (int i = 0; i < rowCount; i++) {
+    const char* entryName = (names[i])                   ? names[i]     : "";
+    const char* entryUrl  = (urls && urls[i])            ? urls[i]      : "";
+    const char* entryUsername = (usernames && usernames[i])  ? usernames[i] : "";
+    const char* entryPassword = (passwords[i])               ? passwords[i] : "";
+
+    if (strlen(entryName) == 0 || strlen(entryUsername) == 0 || strlen(entryPassword) == 0) {
+      skippedEntries.push_back({String(entryName), String(entryUrl), "missing name or password"});
+      continue;
+    }
+
+    if (passwordMenuCount >= MAX_PASSWORD_ITEMS) {
+      skippedEntries.push_back({String(entryName), String(entryUrl), "storage full"});
+      continue;
+    }
+
+    strlcpy(passwordNameValues[passwordMenuCount],     entryName, sizeof(passwordNameValues[passwordMenuCount]));
+    strlcpy(passwordUsernameValues[passwordMenuCount], entryUsername, sizeof(passwordUsernameValues[passwordMenuCount]));
+    strlcpy(passwordTextValues[passwordMenuCount],     entryPassword, sizeof(passwordTextValues[passwordMenuCount]));
+    passwordMenuCount++;
+    added++;
+  }
+
+  refreshPasswordMenuItems();
+  savePasswordsToPreferences();
+
+  String resultHtml = "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
+  resultHtml += "<title>CSV Import</title>";
+  resultHtml += "<style>body{margin:0;font-family:Arial,sans-serif;background:#0b0b0b;color:#f5f5f5;padding:22px;} ";
+  resultHtml += ".card{background:#161616;border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:24px;max-width:600px;margin:40px auto;} ";
+  resultHtml += "h2{color:#fff;margin:0 0 16px 0;} h3{color:#facc15;margin:18px 0 10px 0;font-size:15px;} ";
+  resultHtml += ".ok{color:#4ade80;} .warn{color:#facc15;} ";
+  resultHtml += "table{width:100%;border-collapse:collapse;margin-top:8px;} ";
+  resultHtml += "th,td{padding:10px 12px;border:1px solid rgba(255,255,255,0.08);text-align:left;font-size:13px;} ";
+  resultHtml += "th{background:#202020;color:#f2f2f2;} td{background:#111;color:#ddd;word-break:break-all;} ";
+  resultHtml += ".tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;background:#3b3b3b;color:#facc15;margin-left:6px;} ";
+  resultHtml += "a.btn{display:inline-block;margin-top:18px;padding:12px 22px;background:#4d8ef7;color:#fff;border-radius:12px;text-decoration:none;font-weight:700;}</style></head><body>";
+  resultHtml += "<div class='card'><h2>CSV Import Complete</h2>";
+  resultHtml += "<p class='ok'>Added: <strong>" + String(added) + "</strong></p>";
+
+  if (!skippedEntries.empty()) {
+    resultHtml += "<h3>Skipped (" + String(skippedEntries.size()) + ")</h3>";
+    resultHtml += "<table><tr><th>Title</th><th>URL</th><th>Reason</th></tr>";
+    for (auto& e : skippedEntries) {
+      resultHtml += "<tr><td>" + htmlEscape(e.title.c_str()) + "</td>";
+      resultHtml += "<td>" + htmlEscape(e.url.c_str()) + "</td>";
+      resultHtml += "<td><span class='tag'>" + e.reason + "</span></td></tr>";
+    }
+    resultHtml += "</table>";
+  }
+
+  resultHtml += "<a class='btn' href='/'>Back to Passwords</a></div></body></html>";
+  server.send(200, "text/html", resultHtml);
+}
+
+void handlePortalUploadCSVBody() {
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    csvUploadBody = "";
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    for (size_t i = 0; i < upload.currentSize; i++) {
+      csvUploadBody += (char)upload.buf[i];
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    csvUploadDone = true;
+  }
 }
 
 void stopSettingsPortal() {
