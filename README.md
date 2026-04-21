@@ -52,6 +52,7 @@ Instead of trusting cloud services, your passwords are stored in a **physical de
 
 | Component | Link |
 |----------|------|
+| LILYGO ESP32-S3 with 3D case | [Buy here](https://ar.aliexpress.com/item/1005004496543314.html) |
 | LILYGO ESP32-S3 | [Buy here](https://s.click.aliexpress.com/e/_c3U8wX7j) |
 | RTC Module | [Buy here](https://s.click.aliexpress.com/e/_c4W6CP4H) |
 | USB-C to USB-C Adapter | [Buy here](https://s.click.aliexpress.com/e/_c4nUhoEV) |
